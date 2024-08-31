@@ -1,8 +1,8 @@
 use avian2d::{prelude as avian, prelude::*};
 use bevy::input::keyboard::KeyCode;
 use bevy::prelude::*;
-use bevy_scriptum::prelude::*;
 use bevy_scriptum::runtimes::rhai::prelude::*;
+use bevy_scriptum::{prelude::*, ScriptingRuntimeBuilder};
 use bevy_tnua::{builtins::TnuaBuiltinCrouch, prelude::*};
 use bevy_tnua_avian2d::*;
 use rhai::ImmutableString;
@@ -13,6 +13,47 @@ struct DesiredVelocity(Vec3);
 #[derive(Component)]
 struct JumpQueued(bool);
 
+fn setup_rhai<'a>(runtime: ScriptingRuntimeBuilder<'a, RhaiRuntime>) {
+    runtime
+        .add_function(
+            String::from("print_message"),
+            |In((x,)): In<(ImmutableString,)>| {
+                println!("called with string: '{}'", x);
+            },
+        )
+        .add_function(
+            String::from("read_input"),
+            |In((key,)): In<(ImmutableString,)>, keyboard_input: Res<ButtonInput<KeyCode>>| {
+                let pressed = match key.as_str() {
+                    "A" => keyboard_input.pressed(KeyCode::KeyA),
+                    "D" => keyboard_input.pressed(KeyCode::KeyD),
+                    "S" => keyboard_input.pressed(KeyCode::KeyS),
+                    "Space" => keyboard_input.just_pressed(KeyCode::Space),
+                    _ => false,
+                };
+
+                pressed
+            },
+        )
+        .add_function(
+            String::from("set_desired_velocity"),
+            |In((entity, x, y)): In<(Entity, f32, f32)>, world: &mut World| {
+                if let Some(mut entity_ref) = world.get_entity_mut(entity) {
+                    let desired_velocity = Vec3::new(x, y, 0.0);
+                    entity_ref.insert(DesiredVelocity(desired_velocity));
+                }
+            },
+        )
+        .add_function(
+            String::from("queue_jump"),
+            |In((entity,)): In<(Entity,)>, world: &mut World| {
+                if let Some(mut entity_ref) = world.get_entity_mut(entity) {
+                    entity_ref.insert(JumpQueued(true));
+                }
+            },
+        );
+}
+
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
@@ -20,51 +61,10 @@ fn main() {
         .add_plugins(PhysicsDebugPlugin::default())
         .add_plugins(TnuaAvian2dPlugin::default())
         .add_plugins(TnuaControllerPlugin::default())
-        .add_scripting::<RhaiRuntime>(|runtime| {
-            runtime
-                .add_function(
-                    String::from("print_message"),
-                    |In((x,)): In<(ImmutableString,)>| {
-                        println!("called with string: '{}'", x);
-                    },
-                )
-                .add_function(
-                    String::from("read_input"),
-                    |In((key,)): In<(ImmutableString,)>,
-                     keyboard_input: Res<ButtonInput<KeyCode>>| {
-                        let pressed = match key.as_str() {
-                            "A" => keyboard_input.pressed(KeyCode::KeyA),
-                            "D" => keyboard_input.pressed(KeyCode::KeyD),
-                            "S" => keyboard_input.pressed(KeyCode::KeyS),
-                            "Space" => keyboard_input.just_pressed(KeyCode::Space),
-                            _ => false,
-                        };
-
-                        pressed
-                    },
-                )
-                .add_function(
-                    String::from("set_desired_velocity"),
-                    |In((entity, x, y)): In<(Entity, f32, f32)>, world: &mut World| {
-                        if let Some(mut entity_ref) = world.get_entity_mut(entity) {
-                            let desired_velocity = Vec3::new(x, y, 0.0);
-                            entity_ref.insert(DesiredVelocity(desired_velocity));
-                        }
-                    },
-                )
-                .add_function(
-                    String::from("queue_jump"),
-                    |In((entity,)): In<(Entity,)>, world: &mut World| {
-                        if let Some(mut entity_ref) = world.get_entity_mut(entity) {
-                            entity_ref.insert(JumpQueued(true));
-                        }
-                    },
-                );
-        })
+        .add_scripting::<RhaiRuntime>(setup_rhai)
         .add_systems(Startup, setup_camera_and_lights)
         .add_systems(Startup, setup_player)
         .add_systems(Startup, setup_level)
-        // .add_systems(Startup, setup_script)
         .add_systems(Update, apply_platformer_controls)
         .add_systems(Update, reset_jump_queued.after(apply_platformer_controls))
         .add_systems(Update, call_rhai_on_update_from_rust)
@@ -76,16 +76,6 @@ fn reset_jump_queued(mut query: Query<&mut JumpQueued>) {
         jump_queued.0 = false;
     }
 }
-
-fn print_message(message: String) {
-    println!("Script says: {}", message);
-}
-
-// fn setup_script(mut commands: Commands, asset_server: Res<AssetServer>) {
-//     commands.spawn(Script::<RhaiScript>::new(
-//         asset_server.load("scripts/game_logic.rhai"),
-//     ));
-// }
 
 fn setup_camera_and_lights(mut commands: Commands) {
     commands.spawn(Camera2dBundle {
