@@ -1,6 +1,7 @@
 use avian2d::{prelude as avian, prelude::*};
 use bevy::input::keyboard::KeyCode;
 use bevy::prelude::*;
+use bevy_editor_pls::prelude::*;
 use bevy_scriptum::runtimes::rhai::prelude::*;
 use bevy_scriptum::{prelude::*, ScriptingRuntimeBuilder};
 use bevy_tnua::{builtins::TnuaBuiltinCrouch, prelude::*};
@@ -61,6 +62,7 @@ fn main() {
         .add_plugins(PhysicsDebugPlugin::default())
         .add_plugins(TnuaAvian2dPlugin::default())
         .add_plugins(TnuaControllerPlugin::default())
+        .add_plugins(EditorPlugin::default())
         .add_scripting::<RhaiRuntime>(setup_rhai)
         .add_systems(Startup, setup_camera_and_lights)
         .add_systems(Startup, setup_player)
