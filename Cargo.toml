@@ -1,0 +1,12 @@
+[package]
+name = "bevy_platformer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bevy = { version = "0.14", features = ["file_watcher"] }
+bevy-tnua = "0.19.0"
+bevy-tnua-avian2d = "0.1.1"
+avian2d = "0.1"
+bevy_scriptum = { version = "0.6", features = ["rhai"] }
+rhai = { version = "1.19.0", features = ["f32_float"] }
