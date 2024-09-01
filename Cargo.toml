@@ -1,5 +1,5 @@
 [package]
-name = "bevy_platformer"
+name = "bevy_rts"
 version = "0.1.0"
 edition = "2021"
 
@@ -12,6 +12,8 @@ bevy_scriptum = { version = "0.6", features = ["rhai"] }
 rhai = { version = "1.19.0", default-features = false, features = [ "std", "f32_float" ] }
 instant = { version = "0.1.13", features = ["wasm-bindgen"] }
 bevy_editor_pls = "0.9.0"
+bevy_rts_camera = "0.8.1"
+bevy_mod_picking = "0.20.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 bevy = { version = "0.14", features = ["file_watcher"] }

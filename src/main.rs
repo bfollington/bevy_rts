@@ -1,204 +1,313 @@
-use avian2d::{prelude as avian, prelude::*};
-use bevy::input::keyboard::KeyCode;
 use bevy::prelude::*;
-use bevy_editor_pls::prelude::*;
-use bevy_scriptum::runtimes::rhai::prelude::*;
-use bevy_scriptum::{prelude::*, ScriptingRuntimeBuilder};
-use bevy_tnua::{builtins::TnuaBuiltinCrouch, prelude::*};
-use bevy_tnua_avian2d::*;
-use rhai::ImmutableString;
-
-#[derive(Component)]
-struct DesiredVelocity(Vec3);
-
-#[derive(Component)]
-struct JumpQueued(bool);
-
-fn setup_rhai<'a>(runtime: ScriptingRuntimeBuilder<'a, RhaiRuntime>) {
-    runtime
-        .add_function(
-            String::from("print_message"),
-            |In((x,)): In<(ImmutableString,)>| {
-                println!("called with string: '{}'", x);
-            },
-        )
-        .add_function(
-            String::from("read_input"),
-            |In((key,)): In<(ImmutableString,)>, keyboard_input: Res<ButtonInput<KeyCode>>| {
-                let pressed = match key.as_str() {
-                    "A" => keyboard_input.pressed(KeyCode::KeyA),
-                    "D" => keyboard_input.pressed(KeyCode::KeyD),
-                    "S" => keyboard_input.pressed(KeyCode::KeyS),
-                    "Space" => keyboard_input.just_pressed(KeyCode::Space),
-                    _ => false,
-                };
-
-                pressed
-            },
-        )
-        .add_function(
-            String::from("set_desired_velocity"),
-            |In((entity, x, y)): In<(Entity, f32, f32)>, world: &mut World| {
-                if let Some(mut entity_ref) = world.get_entity_mut(entity) {
-                    let desired_velocity = Vec3::new(x, y, 0.0);
-                    entity_ref.insert(DesiredVelocity(desired_velocity));
-                }
-            },
-        )
-        .add_function(
-            String::from("queue_jump"),
-            |In((entity,)): In<(Entity,)>, world: &mut World| {
-                if let Some(mut entity_ref) = world.get_entity_mut(entity) {
-                    entity_ref.insert(JumpQueued(true));
-                }
-            },
-        );
-}
+use bevy_mod_picking::prelude::*;
+use bevy_rts_camera::{Ground, RtsCamera, RtsCameraControls, RtsCameraPlugin, RtsCameraSystemSet};
+use std::f32::consts::TAU;
 
 fn main() {
     App::new()
         .add_plugins(DefaultPlugins)
-        .add_plugins(PhysicsPlugins::default())
-        .add_plugins(PhysicsDebugPlugin::default())
-        .add_plugins(TnuaAvian2dPlugin::default())
-        .add_plugins(TnuaControllerPlugin::default())
-        .add_plugins(EditorPlugin::default())
-        .add_scripting::<RhaiRuntime>(setup_rhai)
-        .add_systems(Startup, setup_camera_and_lights)
-        .add_systems(Startup, setup_player)
-        .add_systems(Startup, setup_level)
-        .add_systems(Update, apply_platformer_controls)
-        .add_systems(Update, reset_jump_queued.after(apply_platformer_controls))
-        .add_systems(Update, call_rhai_on_update_from_rust)
+        .add_plugins(RtsCameraPlugin)
+        .add_plugins(DefaultPickingPlugins)
+        .add_systems(Startup, setup)
+        .add_systems(
+            Update,
+            (
+                move_unit,
+                lock_or_jump,
+                toggle_controls,
+                move_selected_unit,
+                update_selection_visual,
+                smooth_unit_movement,
+            )
+                .chain()
+                .before(RtsCameraSystemSet),
+        )
         .run();
 }
 
-fn reset_jump_queued(mut query: Query<&mut JumpQueued>) {
-    for mut jump_queued in query.iter_mut() {
-        jump_queued.0 = false;
-    }
-}
-
-fn setup_camera_and_lights(mut commands: Commands) {
-    commands.spawn(Camera2dBundle {
-        transform: Transform::from_xyz(0.0, 14.0, 30.0)
-            .with_scale((0.05 * Vec2::ONE).extend(1.0))
-            .looking_at(Vec3::new(0.0, 14.0, 0.0), Vec3::Y),
-        ..Default::default()
-    });
-}
-
-fn setup_player(mut commands: Commands, asset_server: Res<AssetServer>) {
-    commands.spawn((
-        avian::RigidBody::Dynamic,
-        avian::Collider::capsule(0.5, 1.0),
-        TnuaControllerBundle::default(),
-        CharacterMotionConfig {
-            speed: 40.0,
-            jump_height: 4.0,
-            float_height: 2.0,
-            crouch_float_offset: -0.9,
-        },
-        TnuaAvian2dSensorShape(avian::Collider::rectangle(1.0, 0.0)),
-        SpriteBundle {
-            sprite: Sprite {
-                color: Color::Srgba(Srgba {
-                    red: 0.5,
-                    green: 0.5,
-                    blue: 1.0,
-                    alpha: 1.0,
-                }),
-                custom_size: Some(Vec2::new(1.0, 2.0)),
-                ..default()
-            },
-            ..default()
-        },
-        Script::<RhaiScript>::new(asset_server.load("scripts/game_logic.rhai")),
-        DesiredVelocity(Vec3::ZERO),
-        JumpQueued(false),
-    ));
-}
-
-fn setup_level(mut commands: Commands) {
-    commands.spawn((
-        SpriteBundle {
-            sprite: Sprite {
-                color: Color::Srgba(Srgba {
-                    red: 0.3,
-                    green: 0.3,
-                    blue: 0.3,
-                    alpha: 1.0,
-                }),
-                custom_size: Some(Vec2::new(20.0, 1.0)),
-                ..default()
-            },
-            transform: Transform::from_xyz(0.0, -2.0, 0.0),
-            ..default()
-        },
-        avian::RigidBody::Static,
-        avian::Collider::rectangle(20.0, 1.0),
-    ));
-}
+#[derive(Component)]
+struct Move;
 
 #[derive(Component)]
-struct CharacterMotionConfig {
-    speed: f32,
-    jump_height: f32,
-    float_height: f32,
-    crouch_float_offset: f32,
+struct Selectable;
+
+#[derive(Component)]
+struct Selected;
+
+#[derive(Component)]
+struct TargetPosition(Vec3);
+
+#[derive(Resource)]
+struct UnitMaterials {
+    normal: Handle<StandardMaterial>,
+    selected: Handle<StandardMaterial>,
 }
 
-fn call_rhai_on_update_from_rust(
-    mut scripted_entities: Query<(Entity, &mut RhaiScriptData)>,
-    scripting_runtime: ResMut<RhaiRuntime>,
+fn setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    for (entity, mut script_data) in &mut scripted_entities {
-        scripting_runtime
-            .call_fn("update", &mut script_data, entity, ())
-            .unwrap();
+    // Ground
+    commands.spawn((
+        PbrBundle {
+            mesh: meshes.add(Plane3d::default().mesh().size(80.0, 80.0)),
+            material: materials.add(Color::srgb(0.3, 0.5, 0.3)),
+            ..default()
+        },
+        Ground,
+    ));
+
+    // Some "terrain"
+    let terrain_material = materials.add(Color::srgb(0.8, 0.7, 0.6));
+    commands.spawn((
+        PbrBundle {
+            mesh: meshes.add(Cuboid::new(15.0, 1.0, 5.0)),
+            material: terrain_material.clone(),
+            transform: Transform::from_xyz(15.0, 0.5, -5.0),
+            ..default()
+        },
+        Ground,
+    ));
+    commands.spawn((
+        PbrBundle {
+            mesh: meshes.add(Cuboid::new(10.0, 5.0, 15.0)),
+            material: terrain_material.clone(),
+            transform: Transform::from_xyz(-15.0, 2.5, 0.0),
+            ..default()
+        },
+        Ground,
+    ));
+    commands.spawn((
+        PbrBundle {
+            mesh: meshes.add(Sphere::new(12.5)),
+            material: terrain_material.clone(),
+            transform: Transform::from_xyz(0.0, 0.0, -23.0),
+            ..default()
+        },
+        Ground,
+    ));
+
+    // Create and store unit materials
+    let unit_materials = UnitMaterials {
+        normal: materials.add(StandardMaterial {
+            base_color: Color::rgb(0.8, 0.2, 0.2),
+            ..default()
+        }),
+        selected: materials.add(StandardMaterial {
+            base_color: Color::rgb(0.2, 0.8, 0.2),
+            ..default()
+        }),
+    };
+
+    // Spawn selectable units
+    for x in -5..5 {
+        for z in -5..5 {
+            commands.spawn((
+                PbrBundle {
+                    mesh: meshes.add(Capsule3d::new(0.25, 1.25)),
+                    material: unit_materials.normal.clone(),
+                    transform: Transform::from_xyz(x as f32 * 0.7, 0.75, z as f32 * 0.7),
+                    ..default()
+                },
+                Selectable,
+                PickableBundle::default(),
+                On::<Pointer<Click>>::run(select_unit),
+            ));
+        }
+    }
+
+    // Light
+    commands.spawn(DirectionalLightBundle {
+        directional_light: DirectionalLight {
+            illuminance: 1000.0,
+            shadows_enabled: true,
+            ..default()
+        },
+        transform: Transform::from_rotation(Quat::from_euler(
+            EulerRot::YXZ,
+            150.0f32.to_radians(),
+            -40.0f32.to_radians(),
+            0.0,
+        )),
+        ..default()
+    });
+
+    // Help text
+    commands.spawn(TextBundle {
+        text: Text {
+            sections: vec![TextSection {
+                value: "\
+Press K to jump to the moving unit
+Hold L to lock onto the moving unit
+Press T to toggle controls (K and L will still work)
+Left-click to select units
+Right-click to move selected units"
+                    .to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        ..default()
+    });
+
+    // Camera
+    commands.spawn((
+        Camera3dBundle::default(),
+        RtsCamera {
+            height_max: 50.0,
+            min_angle: 35.0f32.to_radians(),
+            smoothness: 0.1,
+            target_focus: Transform::from_xyz(3.0, 0.0, -3.0),
+            target_zoom: 0.2,
+            ..default()
+        },
+        RtsCameraControls {
+            key_up: KeyCode::KeyW,
+            key_down: KeyCode::KeyS,
+            key_left: KeyCode::KeyA,
+            key_right: KeyCode::KeyD,
+            button_rotate: MouseButton::Middle, // Changed from Right to Middle
+            lock_on_rotate: true,
+            button_drag: Some(MouseButton::Middle),
+            lock_on_drag: true,
+            edge_pan_width: 0.1,
+            pan_speed: 25.0,
+            ..default()
+        },
+    ));
+
+    // Add UnitMaterials as a resource
+    commands.insert_resource(unit_materials);
+}
+
+// Move a unit in a circle
+fn move_unit(
+    time: Res<Time>,
+    mut cube_q: Query<&mut Transform, With<Move>>,
+    mut angle: Local<f32>,
+) {
+    if let Ok(mut cube_tfm) = cube_q.get_single_mut() {
+        // Rotate 20 degrees a second, wrapping around to 0 after a full rotation
+        *angle += 20f32.to_radians() * time.delta_seconds() % TAU;
+        // Convert angle to position
+        let pos = Vec3::new(angle.sin() * 7.5, 0.75, angle.cos() * 7.5);
+        cube_tfm.translation = pos;
     }
 }
 
-fn apply_platformer_controls(
-    keyboard_input: Res<ButtonInput<KeyCode>>,
-    mut query: Query<(
-        &mut TnuaController,
-        &CharacterMotionConfig,
-        &DesiredVelocity,
-        &JumpQueued,
-    )>,
-    time: Res<Time>,
+// Either jump to the moving unit (press K) or lock onto it (hold L)
+fn lock_or_jump(
+    key_input: Res<ButtonInput<KeyCode>>,
+    cube_q: Query<&Transform, With<Move>>,
+    mut cam_q: Query<&mut RtsCamera>,
 ) {
-    for (mut controller, config, desired_velocity, jump_queued) in query.iter_mut() {
-        let desired_velocity = desired_velocity.0;
-
-        controller.basis(TnuaBuiltinWalk {
-            // Move in the direction the player entered, at a speed of 10.0:
-            desired_velocity: desired_velocity * config.speed,
-
-            // Turn the character in the movement direction:
-            desired_forward: desired_velocity,
-
-            // Must be larger than the height of the entity's center from the bottom of its
-            // collider, or else the character will not float and Tnua will not work properly:
-            float_height: config.float_height,
-
-            // TnuaBuiltinWalk has many other fields that can be configured:
-            ..Default::default()
-        });
-
-        if jump_queued.0 {
-            controller.action(TnuaBuiltinJump {
-                height: config.jump_height,
-                ..default()
-            });
+    for cube in cube_q.iter() {
+        for mut cam in cam_q.iter_mut() {
+            if key_input.pressed(KeyCode::KeyL) {
+                cam.target_focus.translation = cube.translation;
+                cam.snap = true;
+            }
+            if key_input.just_pressed(KeyCode::KeyK) {
+                cam.target_focus.translation = cube.translation;
+                cam.target_zoom = 0.4;
+            }
         }
+    }
+}
 
-        if keyboard_input.pressed(KeyCode::KeyS) {
-            controller.action(TnuaBuiltinCrouch {
-                float_offset: config.crouch_float_offset,
-                ..default()
-            });
+fn toggle_controls(
+    mut controls_q: Query<&mut RtsCameraControls>,
+    key_input: Res<ButtonInput<KeyCode>>,
+) {
+    for mut controls in controls_q.iter_mut() {
+        if key_input.just_pressed(KeyCode::KeyT) {
+            controls.enabled = !controls.enabled;
+        }
+    }
+}
+
+fn select_unit(event: Listener<Pointer<Click>>, mut commands: Commands, query: Query<&Selected>) {
+    let entity = event.target;
+    if query.get(entity).is_ok() {
+        commands.entity(entity).remove::<Selected>();
+    } else {
+        commands.entity(entity).insert(Selected);
+    }
+}
+
+fn update_selection_visual(
+    unit_materials: Res<UnitMaterials>,
+    mut query: Query<(&mut Handle<StandardMaterial>, Option<&Selected>), With<Selectable>>,
+) {
+    for (mut material, selected) in query.iter_mut() {
+        *material = if selected.is_some() {
+            unit_materials.selected.clone()
+        } else {
+            unit_materials.normal.clone()
+        };
+    }
+}
+
+fn move_selected_unit(
+    windows: Query<&Window>,
+    camera_q: Query<(&Camera, &GlobalTransform)>,
+    mouse_button_input: Res<ButtonInput<MouseButton>>,
+    mut selected_units: Query<Entity, With<Selected>>,
+    ground: Query<&GlobalTransform, With<Ground>>,
+    mut commands: Commands,
+) {
+    if !mouse_button_input.just_pressed(MouseButton::Right) {
+        return;
+    }
+
+    let (camera, camera_transform) = camera_q.single();
+    let window = windows.single();
+
+    let cursor_position = match window.cursor_position() {
+        Some(pos) => pos,
+        None => return,
+    };
+
+    let ray = match camera.viewport_to_world(camera_transform, cursor_position) {
+        Some(r) => r,
+        None => return,
+    };
+
+    let ground_transform = match ground.iter().next() {
+        Some(gt) => gt,
+        None => return,
+    };
+
+    let ground_plane = InfinitePlane3d::new(Vec3::Y);
+    let distance = match ray.intersect_plane(ground_transform.translation(), ground_plane) {
+        Some(d) => d,
+        None => return,
+    };
+
+    let world_position = ray.get_point(distance);
+    for entity in selected_units.iter() {
+        commands
+            .entity(entity)
+            .insert(TargetPosition(world_position));
+    }
+}
+
+fn smooth_unit_movement(
+    time: Res<Time>,
+    mut units: Query<(Entity, &mut Transform, &TargetPosition)>,
+    mut commands: Commands,
+) {
+    for (entity, mut transform, target) in units.iter_mut() {
+        let direction = target.0 - transform.translation;
+        if direction.length() > 0.1 {
+            let movement = direction.normalize() * 5.0 * time.delta_seconds();
+            transform.translation += movement;
+            // Ensure the unit stays on the ground
+            transform.translation.y = 0.75; // Assuming 0.75 is the ground level for units
+        } else {
+            // Remove the TargetPosition component when the unit reaches its destination
+            commands.entity(entity).remove::<TargetPosition>();
         }
     }
 }
